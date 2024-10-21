@@ -9,6 +9,7 @@ from langchain.memory import ConversationBufferMemory
 from langchain.document_loaders import TextLoader
 from langchain.retrievers import ContextualCompressionRetriever
 from langchain.retrievers.document_compressors import EmbeddingsFilter
+from document_processor import DocumentProcessor
 
 # Initialize session state variables
 if 'chat_history' not in st.session_state:
@@ -22,10 +23,16 @@ if 'embeddings' not in st.session_state:
 if 'llm' not in st.session_state:
     st.session_state.llm = None
 
-# Load and process the text file
-def load_and_process_text(file):
+# Load and process the input
+def load_and_process_input(input_source):
+    processor = DocumentProcessor()
+    temp_file_path = processor.process_input(input_source)
+    
+    with open(temp_file_path, 'r') as file:
+        text = file.read()
+    
     text_splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=0)
-    texts = text_splitter.split_text(file.getvalue().decode())
+    texts = text_splitter.split_text(text)
     return texts
 
 # Initialize embeddings and vector store
@@ -45,12 +52,11 @@ def setup_chain(vector_store, llm):
     memory = ConversationBufferMemory(
         memory_key="chat_history",
         return_messages=True,
-        output_key='answer'  # Specify the output key
+        output_key='answer'
     )
     
-    # Create a retriever with relevance filtering
     base_retriever = vector_store.as_retriever(search_kwargs={"k": 3})
-    embeddings_filter = EmbeddingsFilter(embeddings=st.session_state.embeddings, similarity_threshold=0.7)
+    embeddings_filter = EmbeddingsFilter(embeddings=st.session_state.embeddings, similarity_threshold=0.1)
     retriever = ContextualCompressionRetriever(base_compressor=embeddings_filter, base_retriever=base_retriever)
     
     chain = ConversationalRetrievalChain.from_llm(
@@ -70,19 +76,26 @@ def are_documents_relevant(docs):
 def main():
     st.title("RAG Chatbot with Relevance Checking")
 
-    # Sidebar for file upload and processing
+    # Sidebar for input processing
     with st.sidebar:
-        st.header("Document Upload")
-        uploaded_file = st.file_uploader("Choose a text file", type="txt")
+        st.header("Input Processing")
+        input_type = st.selectbox("Select input type", ["File Upload", "URL", "Text Input"])
         
-        if uploaded_file is not None:
-            if st.button("Process Document"):
-                with st.spinner("Processing document..."):
-                    texts = load_and_process_text(uploaded_file)
-                    st.session_state.vector_store = initialize_vector_store(texts)
-                    st.session_state.llm = initialize_llm()
-                    st.session_state.chain = setup_chain(st.session_state.vector_store, st.session_state.llm)
-                st.success("Document processed successfully!")
+        if input_type == "File Upload":
+            uploaded_file = st.file_uploader("Choose a file", type=["txt", "pdf", "docx", "csv"])
+            input_source = uploaded_file
+        elif input_type == "URL":
+            input_source = st.text_input("Enter URL")
+        else:
+            input_source = st.text_area("Enter text")
+        
+        if st.button("Process Input"):
+            with st.spinner("Processing input..."):
+                texts = load_and_process_input(input_source)
+                st.session_state.vector_store = initialize_vector_store(texts)
+                st.session_state.llm = initialize_llm()
+                st.session_state.chain = setup_chain(st.session_state.vector_store, st.session_state.llm)
+            st.success("Input processed successfully!")
 
     # Main chat interface
     if st.session_state.chain is not None:
@@ -104,6 +117,13 @@ def main():
                 # Get the response from the chain
                 result = st.session_state.chain({"question": prompt})
                 
+                # Print retrieved context
+                print("Retrieved context:")
+                for i, doc in enumerate(result['source_documents']):
+                    print(f"Document {i + 1}:")
+                    print(doc.page_content)
+                    print("---")
+                
                 # Check if retrieved documents are relevant
                 if are_documents_relevant(result['source_documents']):
                     full_response = result['answer']
@@ -116,7 +136,7 @@ def main():
             st.session_state.chat_history.append({"role": "assistant", "content": full_response})
 
     else:
-        st.info("Please upload and process a document to start chatting.")
+        st.info("Please process an input to start chatting.")
 
 if __name__ == "__main__":
     main()
