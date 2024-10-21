@@ -1,0 +1,28 @@
+# Embedding generation and retrieval
+sentence-transformers==2.2.2
+
+# Faiss for vector store
+faiss-cpu==1.7.3
+
+# For handling requests to the local API
+requests==2.31.0
+
+# For working with DataFrames
+pandas==2.1.1
+
+# JSON handling
+json5==0.9.11
+
+# Numpy for embeddings and array handling
+numpy==1.24.4
+
+
+huggingface_hub==0.24.7
+
+langchain
+
+streamlit
+
+langchain-community
+
+
