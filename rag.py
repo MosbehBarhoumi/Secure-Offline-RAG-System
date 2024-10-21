@@ -15,7 +15,6 @@ from langchain.retrievers import BM25Retriever, EnsembleRetriever
 from langchain.schema import Document
 from langchain_core.prompts import PromptTemplate
 
-
 # Initialize session state variables
 if 'chat_history' not in st.session_state:
     st.session_state.chat_history = []
@@ -27,6 +26,10 @@ if 'embeddings' not in st.session_state:
     st.session_state.embeddings = None
 if 'llm' not in st.session_state:
     st.session_state.llm = None
+if 'texts' not in st.session_state:
+    st.session_state.texts = None
+if 'bm25' not in st.session_state:
+    st.session_state.bm25 = None
 
 # Load and process the input
 def load_and_process_input(input_source):
@@ -56,15 +59,12 @@ def initialize_bm25(texts):
 def initialize_llm():
     return Ollama(model="qwen2.5:3b")
 
-
-
 # Function to check if retrieved documents are relevant
 def are_documents_relevant(docs):
     return len(docs) > 0  # You might want to implement a more sophisticated check here
 
-
-
-def setup_hybrid_retriever(vector_store, bm25, texts):
+def setup_hybrid_retriever(vector_store, bm25, texts, faiss_weight):
+    bm25_weight = 1 - faiss_weight
     faiss_retriever = vector_store.as_retriever(search_kwargs={"k": 5})
     
     bm25_retriever = BM25Retriever.from_texts(texts)
@@ -72,7 +72,7 @@ def setup_hybrid_retriever(vector_store, bm25, texts):
 
     ensemble_retriever = EnsembleRetriever(
         retrievers=[faiss_retriever, bm25_retriever],
-        weights=[0.3, 0.7]  # Give more weight to BM25 for keyword matching
+        weights=[faiss_weight, bm25_weight]
     )
     
     embeddings_filter = EmbeddingsFilter(embeddings=st.session_state.embeddings, similarity_threshold=0.5)  # Lower threshold
@@ -108,7 +108,7 @@ def setup_chain(hybrid_retriever, llm):
 def main():
     st.title("RAG Chatbot with Hybrid Search")
 
-    # Sidebar for input processing
+    # Sidebar for input processing and weight adjustment
     with st.sidebar:
         st.header("Input Processing")
         input_type = st.selectbox("Select input type", ["File Upload", "URL", "Text Input"])
@@ -123,13 +123,29 @@ def main():
         
         if st.button("Process Input"):
             with st.spinner("Processing input..."):
-                texts = load_and_process_input(input_source)
-                st.session_state.vector_store = initialize_vector_store(texts)
-                st.session_state.bm25 = initialize_bm25(texts)
+                st.session_state.texts = load_and_process_input(input_source)
+                st.session_state.vector_store = initialize_vector_store(st.session_state.texts)
+                st.session_state.bm25 = initialize_bm25(st.session_state.texts)
                 st.session_state.llm = initialize_llm()
-                hybrid_retriever = setup_hybrid_retriever(st.session_state.vector_store, st.session_state.bm25, texts)
-                st.session_state.chain = setup_chain(hybrid_retriever, st.session_state.llm)
             st.success("Input processed successfully!")
+
+        st.header("Retrieval Weights")
+        faiss_weight = st.slider("Semantic Search (FAISS) Weight", 0.0, 1.0, 0.5, 0.01)
+        bm25_weight = 1 - faiss_weight
+        st.write(f"Keyword Search (BM25) Weight: {bm25_weight:.2f}")
+        
+        if st.button("Update Weights"):
+            if st.session_state.vector_store is not None and st.session_state.bm25 is not None:
+                hybrid_retriever = setup_hybrid_retriever(
+                    st.session_state.vector_store,
+                    st.session_state.bm25,
+                    st.session_state.texts,
+                    faiss_weight
+                )
+                st.session_state.chain = setup_chain(hybrid_retriever, st.session_state.llm)
+                st.success("Weights updated successfully!")
+            else:
+                st.warning("Please process input before updating weights.")
 
     # Main chat interface
     if st.session_state.chain is not None:
