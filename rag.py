@@ -10,6 +10,11 @@ from langchain.document_loaders import TextLoader
 from langchain.retrievers import ContextualCompressionRetriever
 from langchain.retrievers.document_compressors import EmbeddingsFilter
 from document_processor import DocumentProcessor
+from rank_bm25 import BM25Okapi
+from langchain.retrievers import BM25Retriever, EnsembleRetriever
+from langchain.schema import Document
+from langchain_core.prompts import PromptTemplate
+
 
 # Initialize session state variables
 if 'chat_history' not in st.session_state:
@@ -42,39 +47,66 @@ def initialize_vector_store(texts):
     st.session_state.embeddings = embeddings
     return vector_store
 
+def initialize_bm25(texts):
+    corpus = [text.split() for text in texts]
+    return BM25Okapi(corpus)
+
 # Initialize the Ollama model
 @st.cache_resource
 def initialize_llm():
     return Ollama(model="qwen2.5:3b")
 
-# Set up the conversational chain with relevance checking
-def setup_chain(vector_store, llm):
+
+
+# Function to check if retrieved documents are relevant
+def are_documents_relevant(docs):
+    return len(docs) > 0  # You might want to implement a more sophisticated check here
+
+
+
+def setup_hybrid_retriever(vector_store, bm25, texts):
+    faiss_retriever = vector_store.as_retriever(search_kwargs={"k": 5})
+    
+    bm25_retriever = BM25Retriever.from_texts(texts)
+    bm25_retriever.k = 5
+
+    ensemble_retriever = EnsembleRetriever(
+        retrievers=[faiss_retriever, bm25_retriever],
+        weights=[0.3, 0.7]  # Give more weight to BM25 for keyword matching
+    )
+    
+    embeddings_filter = EmbeddingsFilter(embeddings=st.session_state.embeddings, similarity_threshold=0.5)  # Lower threshold
+    hybrid_retriever = ContextualCompressionRetriever(base_compressor=embeddings_filter, base_retriever=ensemble_retriever)
+    
+    return hybrid_retriever
+
+def setup_chain(hybrid_retriever, llm):
     memory = ConversationBufferMemory(
         memory_key="chat_history",
         return_messages=True,
         output_key='answer'
     )
     
-    base_retriever = vector_store.as_retriever(search_kwargs={"k": 3})
-    embeddings_filter = EmbeddingsFilter(embeddings=st.session_state.embeddings, similarity_threshold=0.1)
-    retriever = ContextualCompressionRetriever(base_compressor=embeddings_filter, base_retriever=base_retriever)
+    prompt_template = """Use the following pieces of context to answer the question at the end. If you don't know the answer, just say that you don't know, don't try to make up an answer.
+
+    {context}
+
+    Question: {question}
+    Answer:"""
     
     chain = ConversationalRetrievalChain.from_llm(
         llm=llm,
-        retriever=retriever,
+        retriever=hybrid_retriever,
         memory=memory,
         return_source_documents=True,
-        return_generated_question=True
+        return_generated_question=True,
+        combine_docs_chain_kwargs={"prompt": PromptTemplate(template=prompt_template, input_variables=["context", "question"])}
     )
     return chain
 
-# Function to check if retrieved documents are relevant
-def are_documents_relevant(docs):
-    return len(docs) > 0  # You might want to implement a more sophisticated check here
-
 # Main Streamlit app
 def main():
-    st.title("RAG Chatbot with Relevance Checking")
+    st.title("RAG Chatbot with Hybrid Search")
 
     # Sidebar for input processing
     with st.sidebar:
@@ -93,8 +125,10 @@ def main():
             with st.spinner("Processing input..."):
                 texts = load_and_process_input(input_source)
                 st.session_state.vector_store = initialize_vector_store(texts)
+                st.session_state.bm25 = initialize_bm25(texts)
                 st.session_state.llm = initialize_llm()
-                st.session_state.chain = setup_chain(st.session_state.vector_store, st.session_state.llm)
+                hybrid_retriever = setup_hybrid_retriever(st.session_state.vector_store, st.session_state.bm25, texts)
+                st.session_state.chain = setup_chain(hybrid_retriever, st.session_state.llm)
             st.success("Input processed successfully!")
 
     # Main chat interface
@@ -124,13 +158,7 @@ def main():
                     print(doc.page_content)
                     print("---")
                 
-                # Check if retrieved documents are relevant
-                if are_documents_relevant(result['source_documents']):
-                    full_response = result['answer']
-                else:
-                    # If not relevant, just use the user's query without context
-                    full_response = st.session_state.llm(prompt)
-
+                full_response = result['answer']
                 message_placeholder.markdown(full_response)
             
             st.session_state.chat_history.append({"role": "assistant", "content": full_response})
