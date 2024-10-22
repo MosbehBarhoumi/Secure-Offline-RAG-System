@@ -2,13 +2,14 @@ import streamlit as st
 import os
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
-from langchain.embeddings import HuggingFaceEmbeddings
-from langchain.vectorstores import FAISS
-from langchain.text_splitter import CharacterTextSplitter
-from langchain.llms import Ollama
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_community.vectorstores import FAISS
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_community.llms import Ollama
 from langchain.chains import ConversationalRetrievalChain
 from langchain.memory import ConversationBufferMemory
-from langchain.retrievers import ContextualCompressionRetriever, BM25Retriever, EnsembleRetriever
+from langchain_community.retrievers import BM25Retriever
+from langchain.retrievers import ContextualCompressionRetriever, EnsembleRetriever
 from langchain.retrievers.document_compressors import EmbeddingsFilter
 from langchain.schema import Document
 from langchain_core.prompts import PromptTemplate
@@ -61,12 +62,24 @@ class RAGChatbot:
         with open(temp_file_path, 'r') as file:
             text = file.read()
         
-        text_splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=0)
+        # Using RecursiveCharacterTextSplitter for better chunk handling
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=500,
+            chunk_overlap=50,
+            length_function=len,
+            separators=["\n\n", "\n", " ", ""]
+        )
         return text_splitter.split_text(text)
 
     def initialize_vector_store(self, texts: List[str]) -> FAISS:
         """Initialize embeddings and vector store."""
-        embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+        # Force CPU usage for embeddings
+        os.environ['CUDA_VISIBLE_DEVICES'] = ''
+        
+        embeddings = HuggingFaceEmbeddings(
+            model_name="all-MiniLM-L6-v2",
+            model_kwargs={'device': 'cpu'}
+        )
         st.session_state.state.embeddings = embeddings
         return FAISS.from_texts(texts, embeddings)
 
@@ -132,19 +145,24 @@ class RAGChatbot:
         with st.chat_message("assistant"):
             message_placeholder = st.empty()
             
-            result = st.session_state.state.chain({"question": prompt})
-            
-            # Log retrieved context for debugging
-            for i, doc in enumerate(result['source_documents']):
-                print(f"Document {i + 1}:")
-                print(doc.page_content)
-                print("---")
-            
-            message_placeholder.markdown(result['answer'])
-            
-        st.session_state.state.chat_history.append(
-            {"role": "assistant", "content": result['answer']}
-        )
+            try:
+                result = st.session_state.state.chain({"question": prompt})
+                
+                # Log retrieved context for debugging
+                for i, doc in enumerate(result['source_documents']):
+                    print(f"Document {i + 1}:")
+                    print(doc.page_content)
+                    print("---")
+                
+                message_placeholder.markdown(result['answer'])
+                
+                st.session_state.state.chat_history.append(
+                    {"role": "assistant", "content": result['answer']}
+                )
+            except Exception as e:
+                error_message = f"Error processing request: {str(e)}"
+                message_placeholder.error(error_message)
+                print(f"Error details: {e}")
 
     def render_sidebar(self):
         """Render sidebar with input processing and weight adjustment options."""
@@ -162,12 +180,25 @@ class RAGChatbot:
             
             if st.button("Process Input"):
                 with st.spinner("Processing input..."):
-                    state = st.session_state.state
-                    state.texts = self.load_and_process_input(input_source)
-                    state.vector_store = self.initialize_vector_store(state.texts)
-                    state.bm25 = self.initialize_bm25(state.texts)
-                    state.llm = self.initialize_llm()
-                st.success("Input processed successfully!")
+                    try:
+                        state = st.session_state.state
+                        state.texts = self.load_and_process_input(input_source)
+                        state.vector_store = self.initialize_vector_store(state.texts)
+                        state.bm25 = self.initialize_bm25(state.texts)
+                        state.llm = self.initialize_llm()
+                        
+                        # Initialize chain with default weights
+                        hybrid_retriever = self.setup_hybrid_retriever(
+                            state.vector_store,
+                            state.texts,
+                            0.5  # Default FAISS weight
+                        )
+                        state.chain = self.setup_chain(hybrid_retriever, state.llm)
+                        
+                        st.success("Input processed successfully!")
+                    except Exception as e:
+                        st.error(f"Error processing input: {str(e)}")
+                        print(f"Error details: {e}")
 
             st.header("Retrieval Weights")
             faiss_weight = st.slider("Semantic Search (FAISS) Weight", 0.0, 1.0, 0.5, 0.01)
@@ -176,13 +207,17 @@ class RAGChatbot:
             if st.button("Update Weights"):
                 state = st.session_state.state
                 if state.vector_store is not None and state.texts is not None:
-                    hybrid_retriever = self.setup_hybrid_retriever(
-                        state.vector_store,
-                        state.texts,
-                        faiss_weight
-                    )
-                    state.chain = self.setup_chain(hybrid_retriever, state.llm)
-                    st.success("Weights updated successfully!")
+                    try:
+                        hybrid_retriever = self.setup_hybrid_retriever(
+                            state.vector_store,
+                            state.texts,
+                            faiss_weight
+                        )
+                        state.chain = self.setup_chain(hybrid_retriever, state.llm)
+                        st.success("Weights updated successfully!")
+                    except Exception as e:
+                        st.error(f"Error updating weights: {str(e)}")
+                        print(f"Error details: {e}")
                 else:
                     st.warning("Please process input before updating weights.")
 
