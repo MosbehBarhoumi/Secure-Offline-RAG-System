@@ -35,3 +35,5 @@ beautifulsoup4==4.10.0
 
 # Ollama integration
 langchain-community[ollama]
+
+einops
