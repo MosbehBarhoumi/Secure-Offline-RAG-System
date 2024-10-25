@@ -68,14 +68,19 @@ class RAGInference:
     def __init__(self, config: InferenceConfig):
         self.config = config
         self.chain = None
-        self.qa_prompt_template = """Use the following pieces of context to answer the question at the end. 
-        If you don't know the answer, just say that you don't know, don't try to make up an answer.
-        Always cite specific parts of the context that support your answer.
+        self.qa_prompt_template = """Answer the technical question directly and concisely, following these rules:
+
+            1. Provide the answer immediately without any introductory phrases
+            2. Do not use phrases like "based on", "according to", or "the context shows"
+            3. Do not mention sources, context, or documentation
+            4. Answer questions about matter using the same writing style of the given examples"
+            5. Keep responses concise and focused
+
 
         Context: {context}
 
         Question: {question}
-        Answer: Let me help you with that based on the provided context."""
+        Answer: """
 
     def process_text(self, text: str) -> List[str]:
         """Process input text into chunks"""
@@ -203,7 +208,7 @@ class RAGInference:
 def main():
     config = InferenceConfig(
         train_file="train.csv",
-        test_file="test.csv",
+        test_file="test1.csv",
         output_file="submission.csv",
         faiss_weight=0.5
     )
