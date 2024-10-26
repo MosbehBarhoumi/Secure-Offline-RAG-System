@@ -1,7 +1,7 @@
 import streamlit as st
 import os
 from dataclasses import dataclass
-from typing import List, Optional, Tuple, Dict, Any
+from typing import List, Optional, Dict
 from sentence_transformers import SentenceTransformer
 from langchain_community.vectorstores import FAISS
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -11,21 +11,17 @@ from langchain.memory import ConversationBufferMemory
 from langchain_community.retrievers import BM25Retriever
 from langchain.retrievers import ContextualCompressionRetriever, EnsembleRetriever
 from langchain.retrievers.document_compressors import EmbeddingsFilter
-from langchain.schema import Document
-from langchain_core.prompts import PromptTemplate
 from rank_bm25 import BM25Okapi
 from langchain.embeddings.base import Embeddings
 from document_processor import DocumentProcessor
-import numpy as np
-from langchain_community.embeddings import HuggingFaceEmbeddings
-import logging
-from functools import lru_cache
-import time
+from langchain_core.prompts import PromptTemplate
 from pydantic import BaseModel, Field
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+AVAILABLE_MODELS = {
+    "Qwen 3B": "qwen2.5:3b",
+    "Qwen 7B": "qwen2.5:7b",
+    "Qwen 14B": "qwen2.5:14b"
+}
 
 class NomicEmbeddings(BaseModel, Embeddings):
     """Custom embeddings class for Nomic's embedding model."""
@@ -38,12 +34,10 @@ class NomicEmbeddings(BaseModel, Embeddings):
         super().__init__(**kwargs)
         self._model = SentenceTransformer(
             self.model_name,
-            trust_remote_code=True  # Allow loading custom code
+            trust_remote_code=True
         )
 
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
-        """Embed a list of documents."""
-        # Add the required prefix for documents
         texts = [f"search_document: {text}" for text in texts]
         embeddings = self._model.encode(
             texts,
@@ -53,8 +47,6 @@ class NomicEmbeddings(BaseModel, Embeddings):
         return embeddings.tolist()
 
     def embed_query(self, text: str) -> List[float]:
-        """Embed a query string."""
-        # Add the required prefix for queries
         text = f"search_query: {text}"
         embedding = self._model.encode(
             [text],
@@ -62,30 +54,37 @@ class NomicEmbeddings(BaseModel, Embeddings):
         )
         return embedding[0].tolist()
 
-
-@dataclass
 class SessionState:
-    """Class to manage Streamlit session state variables."""
-    chat_history: List[Dict[str, str]]
-    vector_store: Optional[FAISS] = None
-    chain: Optional[ConversationalRetrievalChain] = None
-    embeddings: Optional[NomicEmbeddings] = None
-    llm: Optional[Ollama] = None
-    texts: Optional[List[str]] = None
-    bm25: Optional[BM25Okapi] = None
-    last_processed_input: Optional[str] = None
-    processing_stats: Dict[str, float] = None
+    def __init__(self):
+        self.chat_history: List[Dict[str, str]] = []
+        self.vector_store: Optional[FAISS] = None
+        self.chain: Optional[ConversationalRetrievalChain] = None
+        self.embeddings: Optional[NomicEmbeddings] = None
+        self.llm: Optional[Ollama] = None
+        self.texts: Optional[List[str]] = None
+        self.bm25: Optional[BM25Okapi] = None
+        self.selected_model: str = "qwen2.5:3b"
+
+    @staticmethod
+    def initialize_llm(model_name: str) -> Ollama:
+        return Ollama(
+            model=model_name,
+            temperature=0.7,
+            top_p=0.9
+        )
 
 class RAGChatbot:
-    """Main class for RAG Chatbot implementation."""
-    
     def __init__(self):
         self.initialize_session_state()
         self.document_processor = DocumentProcessor()
         self.setup_prompts()
 
+    @staticmethod
+    def initialize_session_state():
+        if 'state' not in st.session_state:
+            st.session_state.state = SessionState()
+
     def setup_prompts(self):
-        """Initialize prompt templates."""
         self.qa_prompt_template = """Use the following pieces of context to answer the question at the end. 
         If you don't know the answer, just say that you don't know, don't try to make up an answer.
         Always cite specific parts of the context that support your answer.
@@ -95,68 +94,27 @@ class RAGChatbot:
         Question: {question}
         Answer: Let me help you with that based on the provided context."""
 
-        self.system_prompt = """You are a helpful AI assistant powered by RAG technology.
-        Always be clear about the source of your information and maintain a professional tone.
-        If you're unsure about something, acknowledge it openly."""
-
-    @staticmethod
-    def initialize_session_state():
-        """Initialize session state with default values."""
-        if 'state' not in st.session_state:
-            st.session_state.state = SessionState(
-                chat_history=[],
-                processing_stats={
-                    'embedding_time': 0.0,
-                    'retrieval_time': 0.0,
-                    'total_processed_chunks': 0
-                }
-            )
-
-    @staticmethod
-    def measure_time(func):
-        """Decorator to measure function execution time."""
-        def wrapper(*args, **kwargs):
-            start_time = time.time()
-            result = func(*args, **kwargs)
-            end_time = time.time()
-            execution_time = end_time - start_time
-            logger.info(f"{func.__name__} took {execution_time:.2f} seconds")
-            return result
-        return wrapper
-
-    @measure_time
     def load_and_process_input(self, input_source) -> List[str]:
-        """Process input and split into chunks."""
-        if (st.session_state.state.last_processed_input == str(input_source) and 
-            st.session_state.state.texts is not None):
-            return st.session_state.state.texts
+        if not input_source:
+            return []
 
         temp_file_path = self.document_processor.process_input(input_source)
-        
         with open(temp_file_path, 'r') as file:
             text = file.read()
         
         text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=500,
-            chunk_overlap=50,
-            length_function=len,
-            separators=["\n\n", "\n", ".", " ", ""],
-            is_separator_regex=False
+            chunk_overlap=50
         )
         
-        chunks = text_splitter.split_text(text)
-        st.session_state.state.last_processed_input = str(input_source)
-        st.session_state.state.processing_stats['total_processed_chunks'] = len(chunks)
-        return chunks
+        return text_splitter.split_text(text)
 
-    @measure_time
     def initialize_vector_store(self, texts: List[str]) -> FAISS:
-        """Initialize vector store with Nomic embeddings."""
         embeddings = NomicEmbeddings()
         st.session_state.state.embeddings = embeddings
         
-        batch_size = 32
         vector_store = None
+        batch_size = 32
         
         for i in range(0, len(texts), batch_size):
             batch = texts[i:i + batch_size]
@@ -168,37 +126,16 @@ class RAGChatbot:
         return vector_store
 
     @staticmethod
-    @lru_cache(maxsize=1)
-    def initialize_llm() -> Ollama:
-        """Initialize and cache the LLM instance."""
-        return Ollama(
-            model="qwen2.5:3b",
-            temperature=0.7,
-            top_p=0.9,
-            callback_manager=None
-        )
-    
-    @staticmethod
     def initialize_bm25(texts: List[str]) -> BM25Okapi:
-        """Initialize BM25 retriever."""
         corpus = [text.split() for text in texts]
         return BM25Okapi(corpus)
 
-    def setup_hybrid_retriever(
-        self, 
-        vector_store: FAISS, 
-        texts: List[str], 
-        faiss_weight: float,
-        k: int = 5
-    ) -> ContextualCompressionRetriever:
-        """Set up hybrid retriever with FAISS and BM25."""
+    def setup_hybrid_retriever(self, vector_store: FAISS, texts: List[str], faiss_weight: float) -> ContextualCompressionRetriever:
         bm25_weight = 1 - faiss_weight
         
-        faiss_retriever = vector_store.as_retriever(
-            search_kwargs={"k": k, "fetch_k": k * 2}
-        )
+        faiss_retriever = vector_store.as_retriever(search_kwargs={"k": 5})
         bm25_retriever = BM25Retriever.from_texts(texts)
-        bm25_retriever.k = k
+        bm25_retriever.k = 5
 
         ensemble_retriever = EnsembleRetriever(
             retrievers=[faiss_retriever, bm25_retriever],
@@ -216,7 +153,6 @@ class RAGChatbot:
         )
 
     def setup_chain(self, hybrid_retriever: ContextualCompressionRetriever, llm: Ollama) -> ConversationalRetrievalChain:
-        """Set up the conversational chain."""
         memory = ConversationBufferMemory(
             memory_key="chat_history",
             return_messages=True,
@@ -228,7 +164,6 @@ class RAGChatbot:
             retriever=hybrid_retriever,
             memory=memory,
             return_source_documents=True,
-            return_generated_question=True,
             combine_docs_chain_kwargs={
                 "prompt": PromptTemplate(
                     template=self.qa_prompt_template,
@@ -237,54 +172,23 @@ class RAGChatbot:
             }
         )
 
-    @measure_time
     def handle_chat_input(self, prompt: str):
-        """Process chat input and generate response."""
         try:
-            retrieval_start = time.time()
             result = st.session_state.state.chain({"question": prompt})
-            retrieval_time = time.time() - retrieval_start
-            
-            st.session_state.state.processing_stats['retrieval_time'] = retrieval_time
-            
-            if os.getenv('DEVELOPMENT_MODE', 'false').lower() == 'true':
-                for i, doc in enumerate(result['source_documents']):
-                    logger.debug(f"Document {i + 1}:\n{doc.page_content}\n---")
-            
             self._update_chat_history(prompt, result['answer'])
-            self._display_response(result)
-            
+            with st.chat_message("assistant"):
+                st.markdown(result['answer'])
         except Exception as e:
-            logger.error(f"Error in chat handling: {str(e)}", exc_info=True)
-            self._handle_error(e)
+            with st.chat_message("assistant"):
+                st.error(f"An error occurred: {str(e)}")
 
     def _update_chat_history(self, prompt: str, response: str):
-        """Update chat history with new messages."""
         st.session_state.state.chat_history.extend([
             {"role": "user", "content": prompt},
             {"role": "assistant", "content": response}
         ])
 
-    def _display_response(self, result: Dict[str, Any]):
-        """Display the chatbot response with optional debugging info."""
-        with st.chat_message("assistant"):
-            st.markdown(result['answer'])
-            
-            if st.session_state.get('show_debug_info', False):
-                st.info(f"""
-                Retrieval Time: {st.session_state.state.processing_stats['retrieval_time']:.2f}s
-                Sources Used: {len(result['source_documents'])}
-                """)
-
-    def _handle_error(self, error: Exception):
-        """Handle errors gracefully."""
-        error_message = f"I apologize, but I encountered an error: {str(error)}"
-        with st.chat_message("assistant"):
-            st.error(error_message)
-        logger.error(f"Error details: {error}", exc_info=True)
-
     def _get_input_source(self, input_type: str):
-        """Get input source based on type."""
         if input_type == "File Upload":
             return st.file_uploader("Choose a file", type=["txt", "pdf", "docx", "csv"])
         elif input_type == "URL":
@@ -293,14 +197,13 @@ class RAGChatbot:
             return st.text_area("Enter text")
 
     def _process_input(self, input_source):
-        """Process input source."""
         with st.spinner("Processing input..."):
             try:
                 state = st.session_state.state
                 state.texts = self.load_and_process_input(input_source)
                 state.vector_store = self.initialize_vector_store(state.texts)
                 state.bm25 = self.initialize_bm25(state.texts)
-                state.llm = self.initialize_llm()
+                state.llm = SessionState.initialize_llm(state.selected_model)
                 
                 hybrid_retriever = self.setup_hybrid_retriever(
                     state.vector_store,
@@ -312,10 +215,8 @@ class RAGChatbot:
                 st.success("Input processed successfully!")
             except Exception as e:
                 st.error(f"Error processing input: {str(e)}")
-                logger.error(f"Error details: {e}", exc_info=True)
 
     def _update_weights(self, faiss_weight: float):
-        """Update retrieval weights."""
         state = st.session_state.state
         if state.vector_store is not None and state.texts is not None:
             try:
@@ -328,20 +229,30 @@ class RAGChatbot:
                 st.success("Weights updated successfully!")
             except Exception as e:
                 st.error(f"Error updating weights: {str(e)}")
-                logger.error(f"Error details: {e}", exc_info=True)
         else:
             st.warning("Please process input before updating weights.")
 
     def render_sidebar(self):
-        """Render sidebar with input processing and weight adjustment options."""
         with st.sidebar:
-            st.header("Input Processing")
-            
-            st.session_state['show_debug_info'] = st.checkbox(
-                "Show Debug Info", 
-                value=False
+            st.header("Model Selection")
+            selected_model_name = st.selectbox(
+                "Select Language Model",
+                options=list(AVAILABLE_MODELS.keys()),
+                format_func=lambda x: f"{x} ({AVAILABLE_MODELS[x]})",
+                index=list(AVAILABLE_MODELS.keys()).index(
+                    next(k for k, v in AVAILABLE_MODELS.items() 
+                         if v == st.session_state.state.selected_model)
+                )
             )
             
+            new_model = AVAILABLE_MODELS[selected_model_name]
+            if new_model != st.session_state.state.selected_model:
+                st.session_state.state.selected_model = new_model
+                if st.session_state.state.texts is not None:
+                    st.warning("Model changed. Please reprocess input to use the new model.")
+                    st.session_state.state.chain = None
+            
+            st.header("Input Processing")
             input_type = st.selectbox(
                 "Select input type", 
                 ["File Upload", "URL", "Text Input"]
@@ -362,21 +273,7 @@ class RAGChatbot:
             if st.button("Update Weights"):
                 self._update_weights(faiss_weight)
 
-            if st.session_state['show_debug_info']:
-                self._display_debug_info()
-
-    def _display_debug_info(self):
-        """Display debug information and performance metrics."""
-        st.header("Debug Information")
-        stats = st.session_state.state.processing_stats
-        st.write(f"""
-        - Embedding Time: {stats.get('embedding_time', 0):.2f}s
-        - Retrieval Time: {stats.get('retrieval_time', 0):.2f}s
-        - Processed Chunks: {stats.get('total_processed_chunks', 0)}
-        """)
-
     def render_chat_interface(self):
-        """Render chat interface."""
         st.title("RAG Chatbot with Hybrid Search")
         
         if st.session_state.state.chain is not None:
@@ -392,7 +289,6 @@ class RAGChatbot:
             st.info("Please process an input document to start chatting.")
 
     def run(self):
-        """Main method to run the Streamlit app."""
         self.render_sidebar()
         self.render_chat_interface()
 
