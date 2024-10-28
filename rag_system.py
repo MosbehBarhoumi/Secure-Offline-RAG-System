@@ -5,18 +5,17 @@ from sentence_transformers import SentenceTransformer
 from langchain_community.vectorstores import FAISS
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.llms import Ollama
-from langchain.chains import ConversationalRetrievalChain
-from langchain.memory import ConversationBufferMemory
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.runnables import RunnablePassthrough
 from langchain_community.retrievers import BM25Retriever
 from langchain.retrievers import ContextualCompressionRetriever, EnsembleRetriever
 from langchain.retrievers.document_compressors import EmbeddingsFilter
 from rank_bm25 import BM25Okapi
 from langchain.embeddings.base import Embeddings
-from document_processor import DocumentProcessor
-from langchain_core.prompts import PromptTemplate
 from pydantic import BaseModel, Field
 import logging
 from functools import lru_cache
+from operator import itemgetter
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -25,9 +24,9 @@ logger = logging.getLogger(__name__)
 # Constants
 EMBEDDING_MODEL = "intfloat/multilingual-e5-small"
 AVAILABLE_MODELS = {
-    "Qwen 3B": "qwen2.5:3b",
-    "Qwen 7B": "qwen2.5:7b",
-    "Qwen 14B": "qwen2.5:14b"
+    "Qwen 3B": "qwen:3b",
+    "Qwen 7B": "qwen:7b",
+    "Qwen 14B": "qwen:14b"
 }
 
 DEFAULT_CHUNK_SIZE = 512
@@ -42,16 +41,25 @@ class ChatMessage:
     content: str
 
 class MultiBertEmbeddings(BaseModel, Embeddings):
+    """Updated MultiBertEmbeddings class with proper hashing support"""
     model_name: str = Field(default=EMBEDDING_MODEL)
     show_progress: bool = Field(default=False)
     _model: Optional[SentenceTransformer] = None
+    
+    def __hash__(self):
+        # Implement hash method using model name
+        return hash(self.model_name)
+    
+    def __eq__(self, other):
+        if isinstance(other, MultiBertEmbeddings):
+            return self.model_name == other.model_name
+        return False
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._initialize_model()
 
     def _initialize_model(self) -> None:
-        """Initialize the SentenceTransformer model with error handling."""
         try:
             self._model = SentenceTransformer(self.model_name, device='cpu')
         except Exception as e:
@@ -60,7 +68,6 @@ class MultiBertEmbeddings(BaseModel, Embeddings):
 
     @lru_cache(maxsize=1024)
     def embed_query(self, text: str) -> List[float]:
-        """Cache frequently used query embeddings."""
         try:
             embedding = self._model.encode([text], show_progress_bar=False, 
                                          normalize_embeddings=True)
@@ -83,7 +90,7 @@ class SessionState:
     def __init__(self):
         self.chat_history: List[ChatMessage] = []
         self.vector_store: Optional[FAISS] = None
-        self.chain: Optional[ConversationalRetrievalChain] = None
+        self.chain: Optional[RunnablePassthrough] = None
         self.embeddings: Optional[MultiBertEmbeddings] = None
         self.llm: Optional[Ollama] = None
         self.texts: Optional[List[str]] = None
@@ -99,7 +106,8 @@ class SessionState:
                 temperature=0.7,
                 top_p=0.9,
                 num_ctx=2048,
-                repeat_penalty=1.1
+                repeat_penalty=1.1,
+                base_url="http://localhost:11434"
             )
         except Exception as e:
             logger.error(f"Failed to initialize LLM: {e}")
@@ -108,7 +116,6 @@ class SessionState:
 class RAGChatbot:
     def __init__(self):
         self.initialize_session_state()
-        self.document_processor = DocumentProcessor()
         self.setup_prompts()
 
     @staticmethod
@@ -117,49 +124,26 @@ class RAGChatbot:
             st.session_state.state = SessionState()
 
     def setup_prompts(self):
-        # Moved prompt template to a separate file or constant
-        self.qa_prompt_template = """
+        self.qa_template = """
         Use the following pieces of context to answer the question at the end. 
-        If you don't know the answer, just say that you don't know, don't try to make up an answer.
-        Always cite specific parts of the context that support your answer.
+        If you don't know the answer, just say that you don't know.
 
-        IMPORTANT: If the user's question is in French, you must respond in French.
-        If the user's question is in English, you must respond in English.
+        IMPORTANT: If the user's question is in French, respond in French.
+        If the user's question is in English, respond in English.
         
-        Language-specific guidelines:
-        
-        French responses:
-        - Use proper French grammar and vocabulary
-        - Include French punctuation (e.g., « guillemets » for quotes)
-        - Maintain a formal tone using "vous"
-        - Translate technical terms appropriately
-        
-        English responses:
-        - Use proper English grammar and vocabulary
-        - Follow English punctuation rules
-        - Maintain a professional tone
-        - Use standard technical terminology
-
-        Code-related guidelines (both languages):
-        - Include code examples with explanations in the question's language
-        - Keep code comments and output messages in the question's language
-        - Format code blocks properly for readability
-
         Context: {context}
-
+        
         Question: {question}
         Answer: Let me help you with that based on the provided context.
         """
 
     def load_and_process_input(self, input_source: Any) -> List[str]:
-        """Process input with improved error handling and validation."""
         if not input_source:
             return []
         
         try:
-            temp_file_path = self.document_processor.process_input(input_source)
-            with open(temp_file_path, 'r', encoding='utf-8') as file:
-                text = file.read()
+            # For this example, assuming text input
+            text = input_source if isinstance(input_source, str) else input_source.read().decode()
             
             text_splitter = RecursiveCharacterTextSplitter(
                 chunk_size=DEFAULT_CHUNK_SIZE,
@@ -179,22 +163,13 @@ class RAGChatbot:
             raise
 
     def initialize_vector_store(self, texts: List[str]) -> FAISS:
-        """Initialize vector store with progress tracking and error handling."""
         try:
             embeddings = MultiBertEmbeddings()
             st.session_state.state.embeddings = embeddings
-            vector_store = None
             
-            total_batches = len(range(0, len(texts), DEFAULT_BATCH_SIZE))
             progress_bar = st.progress(0)
-            
-            for i, batch_start in enumerate(range(0, len(texts), DEFAULT_BATCH_SIZE)):
-                batch = texts[batch_start:batch_start + DEFAULT_BATCH_SIZE]
-                if vector_store is None:
-                    vector_store = FAISS.from_texts(batch, embeddings)
-                else:
-                    vector_store.add_texts(batch)
-                progress_bar.progress((i + 1) / total_batches)
+            vector_store = FAISS.from_texts(texts, embeddings)
+            progress_bar.progress(1.0)
             
             return vector_store
             
@@ -208,7 +183,6 @@ class RAGChatbot:
         texts: List[str],
         semantic_weight: float
     ) -> ContextualCompressionRetriever:
-        """Set up hybrid retriever with improved configuration and error handling."""
         try:
             faiss_retriever = vector_store.as_retriever(
                 search_kwargs={"k": DEFAULT_RETRIEVER_K}
@@ -239,48 +213,42 @@ class RAGChatbot:
         self,
         hybrid_retriever: ContextualCompressionRetriever,
         llm: Ollama
-    ) -> ConversationalRetrievalChain:
-        """Set up conversation chain with improved configuration."""
+    ) -> RunnablePassthrough:
         try:
-            memory = ConversationBufferMemory(
-                memory_key="chat_history",
-                return_messages=True,
-                output_key='answer'
+            # Format retrieved documents
+            def format_docs(docs):
+                return "\n\n".join(doc.page_content for doc in docs)
+            
+            # Create the retrieval chain using LCEL
+            chain = (
+                {
+                    "context": lambda x: format_docs(hybrid_retriever.get_relevant_documents(x)),
+                    "question": RunnablePassthrough()
+                }
+                | self.qa_template
+                | llm
+                | StrOutputParser()
             )
             
-            return ConversationalRetrievalChain.from_llm(
-                llm=llm,
-                retriever=hybrid_retriever,
-                memory=memory,
-                return_source_documents=True,
-                combine_docs_chain_kwargs={
-                    "prompt": PromptTemplate(
-                        template=self.qa_prompt_template,
-                        input_variables=["context", "question"]
-                    )
-                }
-            )
+            return chain
             
         except Exception as e:
-            logger.error(f"Error setting up conversation chain: {e}")
+            logger.error(f"Error setting up chain: {e}")
             raise
 
     def handle_chat_input(self, prompt: str):
-        """Handle chat input with improved error handling and response formatting."""
         try:
             with st.spinner("Generating response..."):
-                result = st.session_state.state.chain({"question": prompt})
-                self._update_chat_history(prompt, result['answer'])
+                # Use the new invoke method
+                result = st.session_state.state.chain.invoke(prompt)
                 
+                # Update chat history
+                self._update_chat_history(prompt, result)
+                
+                # Display response
                 with st.chat_message("assistant"):
-                    st.markdown(result['answer'])
+                    st.markdown(result)
                     
-                    # Optionally display source documents
-                    if st.checkbox("Show source documents"):
-                        st.info("Source documents used for this response:")
-                        for doc in result.get('source_documents', []):
-                            st.markdown(f"```\n{doc.page_content}\n```")
-                            
         except Exception as e:
             logger.error(f"Error handling chat input: {e}")
             with st.chat_message("assistant"):
@@ -292,18 +260,15 @@ class RAGChatbot:
                 )
 
     def _update_chat_history(self, prompt: str, response: str):
-        """Update chat history with proper message objects."""
         st.session_state.state.chat_history.extend([
             ChatMessage(role="user", content=prompt),
             ChatMessage(role="assistant", content=response)
         ])
 
     def render_sidebar(self):
-        """Render sidebar with improved UI and error handling."""
         with st.sidebar:
             st.header("Model Selection")
             
-            # Model selection
             selected_model_name = st.selectbox(
                 "Select Language Model",
                 options=list(AVAILABLE_MODELS.keys()),
@@ -321,7 +286,6 @@ class RAGChatbot:
                     st.warning("Model changed. Please reprocess input.")
                     st.session_state.state.chain = None
             
-            # Input processing section
             st.header("Input Processing")
             
             input_type = st.selectbox(
@@ -339,122 +303,73 @@ class RAGChatbot:
             
             if st.button("Process Input"):
                 self._process_input(input_source, semantic_weight)
-                
-            # Display any processing errors
-            if st.session_state.state.processing_error:
-                st.error(st.session_state.state.processing_error)
 
     def _get_input_source(self, input_type: str) -> Any:
-        """Get input source with improved validation and user feedback."""
         if input_type == "File Upload":
             return st.file_uploader(
                 "Choose a file",
-                type=["txt", "pdf", "docx", "csv", "py", "js", "html", "css"],
-                help="Upload a document to chat with"
+                type=["txt", "pdf", "docx", "csv", "py", "js", "html", "css"]
             )
         elif input_type == "URL":
-            return st.text_input(
-                "Enter URL",
-                help="Enter a valid URL to fetch content from"
-            )
+            return st.text_input("Enter URL")
         else:
-            return st.text_area(
-                "Enter text",
-                help="Paste or type the text you want to chat about"
-            )
+            return st.text_area("Enter text")
 
     def _process_input(self, input_source: Any, semantic_weight: float):
-            """Process input with progress tracking and error handling."""
-            with st.spinner("Processing input..."):
-                try:
-                    state = st.session_state.state
-                    state.processing_error = None
+        with st.spinner("Processing input..."):
+            try:
+                state = st.session_state.state
+                state.processing_error = None
+                
+                with st.status("Processing document...") as status:
+                    status.update(label="Loading document...")
+                    state.texts = self.load_and_process_input(input_source)
                     
-                    # Process input in steps with progress updates
-                    with st.status("Processing document...") as status:
-                        status.update(label="Loading document...")
-                        state.texts = self.load_and_process_input(input_source)
-                        
-                        status.update(label="Initializing vector store...")
-                        state.vector_store = self.initialize_vector_store(state.texts)
-                        
-                        status.update(label="Setting up BM25 index...")
-                        state.bm25 = self.initialize_bm25(state.texts)
-                        
-                        status.update(label="Initializing language model...")
-                        state.llm = SessionState.initialize_llm(state.selected_model)
-                        
-                        status.update(label="Setting up retriever...")
-                        hybrid_retriever = self.setup_hybrid_retriever(
-                            state.vector_store,
-                            state.texts,
-                            semantic_weight
-                        )
-                        
-                        status.update(label="Finalizing setup...")
-                        state.chain = self.setup_chain(hybrid_retriever, state.llm)
-                        
-                        status.update(label="Complete!", state="complete")
+                    status.update(label="Initializing vector store...")
+                    state.vector_store = self.initialize_vector_store(state.texts)
                     
-                    st.success("Input processed successfully!")
-                    st.session_state.state.processing_error = None
+                    status.update(label="Initializing language model...")
+                    state.llm = SessionState.initialize_llm(state.selected_model)
                     
-                except Exception as e:
-                    logger.error(f"Error processing input: {str(e)}")
-                    st.session_state.state.processing_error = str(e)
-                    st.error(f"Error processing input: {str(e)}")
-                    raise
-
-    @staticmethod
-    def initialize_bm25(texts: List[str]) -> BM25Okapi:
-        """Initialize BM25 index with error handling."""
-        try:
-            corpus = [text.split() for text in texts]
-            return BM25Okapi(corpus)
-        except Exception as e:
-            logger.error(f"Error initializing BM25: {e}")
-            raise
+                    status.update(label="Setting up retriever...")
+                    hybrid_retriever = self.setup_hybrid_retriever(
+                        state.vector_store,
+                        state.texts,
+                        semantic_weight
+                    )
+                    
+                    status.update(label="Finalizing setup...")
+                    state.chain = self.setup_chain(hybrid_retriever, state.llm)
+                    
+                    status.update(label="Complete!", state="complete")
+                
+                st.success("Input processed successfully!")
+                
+            except Exception as e:
+                logger.error(f"Error processing input: {str(e)}")
+                st.session_state.state.processing_error = str(e)
+                st.error(f"Error processing input: {str(e)}")
+                raise
 
     def render_chat_interface(self):
-        """Render the main chat interface with improved UI and error handling."""
         st.title("Multilingual RAG Chatbot")
         
-        # Display system status
         if st.session_state.state.chain is not None:
             st.success("System is ready for chat!")
             
-            # Display chat history
             for message in st.session_state.state.chat_history:
                 with st.chat_message(message.role):
                     st.markdown(message.content)
             
-            # Chat input
-            if prompt := st.chat_input(
-                "Ask a question in English or French:",
-                key="chat_input",
-                help="Type your question and press Enter to send"
-            ):
+            prompt = st.chat_input("Ask a question in English or French:")
+            if prompt:
                 with st.chat_message("user"):
                     st.markdown(prompt)
                 self.handle_chat_input(prompt)
         else:
-            st.info(
-                "Please process an input document using the sidebar controls to start chatting."
-            )
-            
-            # Display helpful tips
-            with st.expander("How to use this chatbot"):
-                st.markdown("""
-                1. Select your preferred language model from the sidebar
-                2. Choose an input type (file, URL, or text)
-                3. Upload or enter your content
-                4. Adjust the semantic search weight if needed
-                5. Click 'Process Input' to initialize the system
-                6. Start chatting in English or French!
-                """)
+            st.info("Please process an input document using the sidebar controls to start chatting.")
 
     def run(self):
-        """Main execution method with error handling."""
         try:
             self.render_sidebar()
             self.render_chat_interface()
@@ -465,9 +380,7 @@ class RAGChatbot:
             )
 
 def main():
-    """Main entry point with streamlit configuration and error handling."""
     try:
-        # Configure Streamlit page
         st.set_page_config(
             page_title="Multilingual RAG Chatbot",
             page_icon="🤖",
@@ -475,7 +388,6 @@ def main():
             initial_sidebar_state="expanded"
         )
         
-        # Initialize and run chatbot
         chatbot = RAGChatbot()
         chatbot.run()
         
