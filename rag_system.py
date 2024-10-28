@@ -74,8 +74,25 @@ class RAGChatbot:
         self.qa_prompt_template = """Use the following pieces of context to answer the question at the end. 
         If you don't know the answer, just say that you don't know, don't try to make up an answer.
         Always cite specific parts of the context that support your answer.
-        If the question is in French, respond in French. If it's in English, respond in English.
-        For code-related questions, include code examples and explanations in your response.
+
+        IMPORTANT: If the user's question is in French, you must respond in French.
+        If the user's question is in English, you must respond in English.
+        
+        When responding in French:
+        - Use proper French grammar and vocabulary
+        - Include French punctuation (e.g., « guillemets » for quotes)
+        - Maintain a formal tone using "vous"
+        - Translate any technical terms appropriately
+        
+        When responding in English:
+        - Use proper English grammar and vocabulary
+        - Follow English punctuation rules
+        - Maintain a professional tone
+        - Use standard technical terminology
+
+        For code-related questions in either language:
+        - Include code examples with explanations in the same language as the question
+        - Keep code comments and output messages in the question's language
 
         Context: {context}
 
@@ -153,7 +170,11 @@ class RAGChatbot:
                     st.markdown(result['answer'])
         except Exception as e:
             with st.chat_message("assistant"):
-                st.error(f"An error occurred: {str(e)}")
+                error_msg = str(e)
+                if "fr" in prompt[:2].lower():  # Simple check for French
+                    st.error(f"Une erreur s'est produite : {error_msg}")
+                else:
+                    st.error(f"An error occurred: {error_msg}")
 
     def _update_chat_history(self, prompt: str, response: str):
         st.session_state.state.chat_history.extend([
