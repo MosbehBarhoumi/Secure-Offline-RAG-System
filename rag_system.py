@@ -4,7 +4,7 @@ from typing import List, Optional, Dict, Any
 from sentence_transformers import SentenceTransformer
 from langchain_community.vectorstores import FAISS
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.llms import Ollama
+from langchain_ollama import ChatOllama
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough
 from langchain_community.retrievers import BM25Retriever
@@ -13,9 +13,9 @@ from langchain.retrievers.document_compressors import EmbeddingsFilter
 from rank_bm25 import BM25Okapi
 from langchain.embeddings.base import Embeddings
 from pydantic import BaseModel, Field
+from langchain_core.prompts import PromptTemplate
 import logging
 from functools import lru_cache
-from operator import itemgetter
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 # Constants
 EMBEDDING_MODEL = "intfloat/multilingual-e5-small"
 AVAILABLE_MODELS = {
-    "Qwen 3B": "qwen:3b",
+    "Qwen 3B": "qwen2.5:3b",
     "Qwen 7B": "qwen:7b",
     "Qwen 14B": "qwen:14b"
 }
@@ -46,8 +46,12 @@ class MultiBertEmbeddings(BaseModel, Embeddings):
     show_progress: bool = Field(default=False)
     _model: Optional[SentenceTransformer] = None
     
+    model_config = {
+        'arbitrary_types_allowed': True,
+        'protected_namespaces': ()
+    }
+    
     def __hash__(self):
-        # Implement hash method using model name
         return hash(self.model_name)
     
     def __eq__(self, other):
@@ -90,22 +94,22 @@ class SessionState:
     def __init__(self):
         self.chat_history: List[ChatMessage] = []
         self.vector_store: Optional[FAISS] = None
-        self.chain: Optional[RunnablePassthrough] = None
+        self.chain: Optional[Any] = None
         self.embeddings: Optional[MultiBertEmbeddings] = None
-        self.llm: Optional[Ollama] = None
+        self.llm: Optional[ChatOllama] = None
         self.texts: Optional[List[str]] = None
         self.bm25: Optional[BM25Okapi] = None
         self.selected_model: str = list(AVAILABLE_MODELS.values())[0]
         self.processing_error: Optional[str] = None
 
     @staticmethod
-    def initialize_llm(model_name: str) -> Ollama:
+    def initialize_llm(model_name: str) -> ChatOllama:
         try:
-            return Ollama(
+            return ChatOllama(
                 model=model_name,
                 temperature=0.7,
                 top_p=0.9,
-                num_ctx=2048,
+                context_window=2048,  # Updated from num_ctx
                 repeat_penalty=1.1,
                 base_url="http://localhost:11434"
             )
@@ -124,7 +128,7 @@ class RAGChatbot:
             st.session_state.state = SessionState()
 
     def setup_prompts(self):
-        self.qa_template = """
+        self.qa_template = PromptTemplate.from_template("""
         Use the following pieces of context to answer the question at the end. 
         If you don't know the answer, just say that you don't know.
 
@@ -135,7 +139,7 @@ class RAGChatbot:
         
         Question: {question}
         Answer: Let me help you with that based on the provided context.
-        """
+        """)
 
     def load_and_process_input(self, input_source: Any) -> List[str]:
         if not input_source:
@@ -212,25 +216,23 @@ class RAGChatbot:
     def setup_chain(
         self,
         hybrid_retriever: ContextualCompressionRetriever,
-        llm: Ollama
-    ) -> RunnablePassthrough:
+        llm: ChatOllama
+    ) -> Any:
         try:
-            # Format retrieved documents
             def format_docs(docs):
                 return "\n\n".join(doc.page_content for doc in docs)
             
-            # Create the retrieval chain using LCEL
-            chain = (
-                {
-                    "context": lambda x: format_docs(hybrid_retriever.get_relevant_documents(x)),
-                    "question": RunnablePassthrough()
-                }
-                | self.qa_template
-                | llm
-                | StrOutputParser()
-            )
+            def get_context(query):
+                docs = hybrid_retriever.get_relevant_documents(query)
+                return format_docs(docs)
             
-            return chain
+            # Create the retrieval chain using LCEL
+            retrieval_chain = RunnablePassthrough() | {
+                "context": get_context,
+                "question": lambda x: x
+            } | self.qa_template | llm | StrOutputParser()
+            
+            return retrieval_chain
             
         except Exception as e:
             logger.error(f"Error setting up chain: {e}")
@@ -239,13 +241,10 @@ class RAGChatbot:
     def handle_chat_input(self, prompt: str):
         try:
             with st.spinner("Generating response..."):
-                # Use the new invoke method
                 result = st.session_state.state.chain.invoke(prompt)
                 
-                # Update chat history
                 self._update_chat_history(prompt, result)
                 
-                # Display response
                 with st.chat_message("assistant"):
                     st.markdown(result)
                     
