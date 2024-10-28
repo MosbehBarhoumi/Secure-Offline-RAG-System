@@ -25,8 +25,8 @@ logger = logging.getLogger(__name__)
 EMBEDDING_MODEL = "intfloat/multilingual-e5-small"
 AVAILABLE_MODELS = {
     "Qwen 3B": "qwen2.5:3b",
-    "Qwen 7B": "qwen:7b",
-    "Qwen 14B": "qwen:14b"
+    "Qwen 7B": "qwen2.5:7b",
+    "Qwen 14B": "qwen2.5:14b"
 }
 
 DEFAULT_CHUNK_SIZE = 512
