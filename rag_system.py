@@ -14,6 +14,7 @@ from rank_bm25 import BM25Okapi
 from langchain.embeddings.base import Embeddings
 from pydantic import BaseModel, Field
 from langchain_core.prompts import PromptTemplate
+from document_processor import DocumentProcessor
 import logging
 from functools import lru_cache
 
@@ -101,6 +102,7 @@ class SessionState:
         self.bm25: Optional[BM25Okapi] = None
         self.selected_model: str = list(AVAILABLE_MODELS.values())[0]
         self.processing_error: Optional[str] = None
+        self.document_processor: DocumentProcessor = DocumentProcessor()
 
     @staticmethod
     def initialize_llm(model_name: str) -> ChatOllama:
@@ -109,7 +111,7 @@ class SessionState:
                 model=model_name,
                 temperature=0.7,
                 top_p=0.9,
-                context_window=2048,  # Updated from num_ctx
+                context_window=2048,
                 repeat_penalty=1.1,
                 base_url="http://localhost:11434"
             )
@@ -146,8 +148,11 @@ class RAGChatbot:
             return []
         
         try:
-            # For this example, assuming text input
-            text = input_source if isinstance(input_source, str) else input_source.read().decode()
+            # Process the input using DocumentProcessor
+            processed_file_path = st.session_state.state.document_processor.process_input(input_source)
+            
+            with open(processed_file_path, 'r', encoding='utf-8') as file:
+                text = file.read()
             
             text_splitter = RecursiveCharacterTextSplitter(
                 chunk_size=DEFAULT_CHUNK_SIZE,
@@ -226,7 +231,6 @@ class RAGChatbot:
                 docs = hybrid_retriever.get_relevant_documents(query)
                 return format_docs(docs)
             
-            # Create the retrieval chain using LCEL
             retrieval_chain = RunnablePassthrough() | {
                 "context": get_context,
                 "question": lambda x: x
