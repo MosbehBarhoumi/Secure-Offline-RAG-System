@@ -56,8 +56,8 @@ A powerful multilingual Retrieval-Augmented Generation (RAG) chatbot built with 
 
 3. **Clone the Repository**
    ```bash
-   git clone <your-repository-url>
-   cd <repository-name>
+   git clone git@github.com:MosbehBarhoumi/Secure-Offline-RAG-System.git
+   cd Secure-Offline-RAG-System
    ```
 
 4. **Create and Activate Virtual Environment**
@@ -78,22 +78,28 @@ A powerful multilingual Retrieval-Augmented Generation (RAG) chatbot built with 
    ollama serve
    ```
 
-2. **Launch the Application**
+2. **Pull the model from ollama**
+   ```bash
+   ollama pull qwen2.5:3b
+   ```
+   Or pull the model you will be using. Check [Qwen Models Page](https://ollama.com/library/qwen2.5) for more information about available models and their requirements.
+
+3. **Launch the Application**
    ```bash
    streamlit run app.py
    ```
 
-3. **Access the Interface**
+4. **Access the Interface**
    - Open your browser and navigate to `http://localhost:8501`
    - The sidebar will appear with configuration options
 
-4. **Process Documents**
+5. **Process Documents**
    - Choose your input type (File/URL/Text)
    - Upload or input your document
    - Adjust the semantic search weight if desired
    - Click "Process Input"
 
-5. **Start Chatting**
+6. **Start Chatting**
    - Once processing is complete, you can start asking questions
    - Type in English or French - the system will respond in the same language
 
@@ -142,28 +148,5 @@ The system includes comprehensive error handling:
    - Decrease semantic_weight for factual queries
    - Adjust similarity_threshold based on your needs
 
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-## License
-
-[Your License Here]
-
-## Acknowledgments
-
-- Qwen by Alibaba
-- Streamlit
-- LangChain
-- FAISS
-- Sentence-Transformers
-
-## Support
-
-For issues and questions:
-1. Check the logs (logging is enabled by default)
-2. Create an issue in the repository
-3. Contact the maintainer
 
 ---
-**Note**: This project is for educational and research purposes. Please ensure you comply with all relevant licenses and terms of service.
