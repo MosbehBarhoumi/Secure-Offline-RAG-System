@@ -1,41 +1,56 @@
-# Embedding generation and retrieval
+# Streamlit for UI
+streamlit
+
+# Data classes and typing support (native, so no need to install dataclasses or typing)
+
+# Sentence Transformers for embedding generation
 sentence-transformers==2.2.2
 
-# Faiss for vector store
+# FAISS for vector storage (using CPU version)
 faiss-cpu==1.7.3
 
-# For handling requests to the local API and URL handling
+# Requests for handling API requests
 requests==2.31.0
 
-# For working with DataFrames
+# Pandas for DataFrame support
 pandas==2.1.1
 
 # JSON handling
 json5==0.9.11
 
-# Numpy for embeddings and array handling
+# Numpy for numerical computations and embeddings
 numpy==1.24.4
 
+# Hugging Face Hub for model downloads
 huggingface_hub==0.24.7
 
+# LangChain for language model integrations
 langchain
 
-streamlit
-
+# LangChain Community for additional integrations like FAISS
 langchain-community
 
-# PDF processing
+# PDF processing library
 PyPDF2==3.0.1
 
 # Word document processing
 python-docx==0.8.11
 
-# HTML parsing
+# HTML parsing with Beautiful Soup
 beautifulsoup4==4.10.0
 
-# Ollama integration
+# Ollama API integration
 langchain-community[ollama]
 
+# Operations on multidimensional arrays (e.g., for embeddings)
 einops
 
+# Additional LangChain Ollama module
 langchain-ollama
+
+# Rank BM25 retrieval
+rank-bm25
+
+# Logging (native Python library, no install needed)
+
+# LRU cache (native Python library, no install needed)
