@@ -208,7 +208,7 @@ class RAGInference:
 def main():
     config = InferenceConfig(
         train_file="train.csv",
-        test_file="test1.csv",
+        test_file="test.csv",
         output_file="submission.csv",
         faiss_weight=0.5
     )
