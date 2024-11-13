@@ -2,6 +2,13 @@
 
 A powerful multilingual Retrieval-Augmented Generation (RAG) chatbot built with Streamlit, supporting both English and French conversations. The system combines semantic search and keyword-based retrieval to provide accurate responses based on your documents.
 
+## Demo
+
+https://github.com/user-attachments/assets/b171dfc5-5c7b-4d5a-ac3f-928398d5b58f
+
+
+
+
 ## Features
 
 - 🌐 **Multilingual Support**
